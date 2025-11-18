@@ -1,23 +1,24 @@
 import cv2
-#print(cv2.getBuildInformation())
 
 def identify_ball(imageNames):
+    # -> initialize subtractor and containers
     bgSub = cv2.createBackgroundSubtractorMOG2()
     fgs = []
     fgsThresh = []
     cts = []
+    
+    # -> process frames
     for imgName in imageNames:
         img = cv2.imread(f"./footage/frames/{imgName}")
         # background substitution
         fgs.append(bgSub.apply(img))
-        # find and render contours
+        # find and render contours on foreground and binary foreground
         _, thresh = cv2.threshold(fgs[-1], 180, 255, cv2.THRESH_BINARY)
         fgsThresh.append(thresh)
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cts.append(cv2.drawContours(img, contours, -1, (0, 255, 0), 2))
 
-
-
+    # p> write videos
     frame_size = cv2.imread(f"./footage/frames/{imgName}").shape[:2]
     video_wr = cv2.VideoWriter("./footage/_extractedFG.avi", cv2.VideoWriter.fourcc(*"MJPG"), 50.0, (frame_size[1], frame_size[0]), isColor=False)
     for fg in fgs:

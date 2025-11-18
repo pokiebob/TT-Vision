@@ -1,4 +1,8 @@
+import os
 import cv2
+
+if not os.path.isdir("./footage/frames"):
+    os.mkdir("./footage/frames")
 
 def create_frames(video_name):
     vid = cv2.VideoCapture(f"./footage/{video_name}")
