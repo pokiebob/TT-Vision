@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import math
+from tqdm import tqdm
 
 def identify_serve(contours, frame_shape, hsv_img=None, prev_center=None, frame_idx=None):
     h, w = frame_shape[:2]
@@ -218,4 +219,55 @@ def identify_ball(imageNames):
     video_ct_wr.release()
 
 
-identify_ball([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
+def calculate_flow(imageNames):
+    outFrames = []
+    hsv = np.zeros_like(cv2.imread(f"./footage/frames/{imageNames[0]}"))
+    hsv[..., 1] = 255
+
+    for i in tqdm(range(1, len(imageNames))):
+        oldImg = cv2.imread(f"./footage/frames/{imageNames[i-1]}")
+        oldImg = cv2.cvtColor(oldImg, cv2.COLOR_BGR2GRAY)
+        newImg = cv2.imread(f"./footage/frames/{imageNames[i]}")
+        newImg = cv2.cvtColor(newImg, cv2.COLOR_BGR2GRAY)
+        flow = cv2.calcOpticalFlowFarneback(oldImg, newImg, None, 0.7, 4, 27, 10, 5, 1.1, cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
+ 
+        # Encoding: convert the algorithm's output into Polar coordinates
+        mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+        # Use Hue and Value to encode the Optical Flow
+        hsv[..., 0] = ang * 180 / np.pi / 2
+        hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
+    
+        # Convert HSV image into BGR for demo
+        bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        outFrames.append(bgr)
+
+    frame_size = cv2.imread(f"./footage/frames/{imageNames[0]}").shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    video_wr = cv2.VideoWriter(
+        "./footage/_optFlow.avi",
+        cv2.VideoWriter.fourcc(*"MJPG"),
+        50.0,
+        (frame_size[1], frame_size[0]),
+        isColor=True,
+    )
+    for idx, frame in enumerate(outFrames):
+        frame_annot = frame.copy()
+        cv2.putText(
+            frame_annot,
+            f"Frame {idx}",
+            (30, 60),
+            font,
+            1.0,
+            255,
+            2,
+            cv2.LINE_AA,
+        )
+        video_wr.write(frame_annot)
+    video_wr.release()
+
+# -------
+
+#identify_ball([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
+
+calculate_flow([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
