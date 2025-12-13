@@ -85,6 +85,180 @@ def identify_serve(contours, frame_shape, hsv_img=None, prev_center=None, frame_
 
     return best_center, best_radius, candidates
 
+def identify_rally(
+    contours,
+    frame_shape,
+    hsv_img=None,
+    prev_center=None,
+    prev_vel=None,
+    frame_idx=None,
+    serve_anchor=None,
+    rally_age=None,
+):
+    h, w = frame_shape[:2]
+
+    pred_center = None
+    if prev_center is not None and prev_vel is not None:
+        pred_center = prev_center + prev_vel
+
+    # serve-anchor prior
+    use_anchor = (serve_anchor is not None) and (rally_age is not None) and (rally_age <= 20)
+    anchor_center = serve_anchor if use_anchor else None
+
+    candidates = []
+
+    MIN_AREA = 20
+    MAX_AREA = 1000
+
+    # reject super-tall blobs
+    MAX_BH_BW = 0.9  
+
+    best_score = -1e18
+    best_center = None
+    best_box = None
+    best_info = None
+
+    for ci, c in enumerate(contours):
+        area = float(cv2.contourArea(c))
+        if area < MIN_AREA or area > MAX_AREA:
+            continue
+        if area <= 0:
+            continue
+
+        x, y, bw, bh = cv2.boundingRect(c)
+        bw = float(bw)
+        bh = float(bh)
+        bh_bw = bh / (bw + 1e-6)
+
+        if bw > 0 and bh_bw > MAX_BH_BW:
+            continue
+
+        # oriented rect 
+        rect = cv2.minAreaRect(c)  # ((cx,cy),(wr,hr),angle)
+        (cx, cy) = rect[0]
+        (wr, hr) = rect[1]
+        wr = float(wr)
+        hr = float(hr)
+
+        center = np.array([cx, cy], dtype=np.float32)
+
+        if center[1] < 0.3 * h or center[1] > 0.7 * h:
+            continue
+
+        # HSV patch 
+        hsv_mean = None
+        H = S = V = None
+        if hsv_img is not None:
+            iy = int(round(center[1]))
+            ix = int(round(center[0]))
+            y0 = max(iy - 2, 0)
+            y1 = min(iy + 3, hsv_img.shape[0])
+            x0 = max(ix - 2, 0)
+            x1 = min(ix + 3, hsv_img.shape[1])
+            patch = hsv_img[y0:y1, x0:x1]
+            if patch.size > 0:
+                hsv_mean = patch.mean(axis=(0, 1))
+                H, S, V = float(hsv_mean[0]), float(hsv_mean[1]), float(hsv_mean[2])
+
+        # distance to prediction
+        dist_pred = None
+        if pred_center is not None:
+            dist_pred = float(np.linalg.norm(center - pred_center))
+
+        # distance to serve anchor (early rally)
+        dist_anchor = None
+        if anchor_center is not None:
+            dist_anchor = float(np.linalg.norm(center - anchor_center))
+
+        box = cv2.boxPoints(rect).astype(np.int32)
+
+        score = 0.0
+        if V is not None:
+            score += 0.01 * V                 # prefer brighter
+
+        # prefer near predicted location (if available)
+        if dist_pred is not None:
+            score += 2.0 * math.exp(-(dist_pred * dist_pred) / (2.0 * (120.0 ** 2)))
+
+
+        # prefer near serve anchor for first ~20 rally frames (strong early, fades out)
+        if dist_anchor is not None and rally_age is not None:
+            sigma = 180.0 # "launch zone" radius
+            fade = max(0.0, 1.0 - (rally_age / 20.0))
+            score += (4.0 * fade) * math.exp(-(dist_anchor * dist_anchor) / (2.0 * sigma * sigma))
+
+        # store candidate info f
+        info = {
+            "idx": ci,
+            "area": area,
+            "cx": float(cx),
+            "cy": float(cy),
+            "bw": bw,
+            "bh": bh,
+            "bh_bw": float(bh_bw),
+            "wr": wr,
+            "hr": hr,
+            "H": H,
+            "S": S,
+            "V": V,
+            "dist_pred": dist_pred,
+            "dist_anchor": dist_anchor,
+            "rect": rect,
+            "box": box,
+            "score": score,
+        }
+        candidates.append(info)
+
+        if score > best_score:
+            best_score = score
+            best_center = center
+            best_box = box
+            best_info = info
+
+    if frame_idx < 180 or frame_idx > 210:
+        return best_center, best_box, candidates
+    print(f"\n[frame {frame_idx}] rally contours={len(contours)} candidates={len(candidates)}")
+    if pred_center is not None and prev_center is not None and prev_vel is not None:
+        print(
+            f"  pred=({pred_center[0]:.1f},{pred_center[1]:.1f}) "
+            f"prev=({prev_center[0]:.1f},{prev_center[1]:.1f}) "
+            f"v=({prev_vel[0]:.1f},{prev_vel[1]:.1f})"
+        )
+    if anchor_center is not None and rally_age is not None:
+        print(f"  serve_anchor=({anchor_center[0]:.1f},{anchor_center[1]:.1f}) rally_age={rally_age}")
+
+    cand_to_print = sorted(candidates, key=lambda d: d["score"], reverse=True)[:10]
+    print(f"  (printing top 10 by score; total candidates={len(candidates)})")
+
+
+    for d in cand_to_print:
+        if d["V"] is None:
+            hsv_str = "HSV=None"
+        else:
+            hsv_str = f"HSV=({d['H']:.1f},{d['S']:.1f},{d['V']:.1f})"
+
+        dist_pred_str = "" if d["dist_pred"] is None else f" dist_pred={d['dist_pred']:.1f}"
+        dist_anch_str = "" if d["dist_anchor"] is None else f" dist_anchor={d['dist_anchor']:.1f}"
+
+        print(
+            f"  cand#{d['idx']:03d}: area={d['area']:.1f} "
+            f"center=({d['cx']:.1f},{d['cy']:.1f}) "
+            f"bbox=(w={d['bw']:.1f},h={d['bh']:.1f},h/w={d['bh_bw']:.2f}) "
+            f"{hsv_str}{dist_pred_str}{dist_anch_str}"
+        )
+
+    if best_center is None:
+        print(f"[frame {frame_idx}] NO pick (no candidates)\n")
+        return None, None, candidates
+
+    print(
+        f"[frame {frame_idx}] PICKED idx={best_info['idx']} center=({best_info['cx']:.1f},{best_info['cy']:.1f}) "
+        f"area={best_info['area']:.1f} "
+        f"V={best_info['V'] if best_info['V'] is not None else None} score={best_score:.3f}\n"
+    )
+
+    return best_center, best_box, candidates
+
 
 def identify_ball(video_path):
 
@@ -109,6 +283,10 @@ def identify_ball(video_path):
     prev_center = None
     prev_vel = np.array([0.0, 0.0], dtype=np.float32)
 
+    serve_anchor = None
+    rally_age = None
+
+
     # -> process frames
     frame_idx = 0
     while True:
@@ -131,6 +309,7 @@ def identify_ball(video_path):
         ct_img = img.copy()
         cv2.drawContours(ct_img, contours, -1, (0, 255, 0), 2)
 
+
         # assume serve occurs only in first 120 frames
         if frame_idx < 120:
             center, radius, candidates = identify_serve(
@@ -151,6 +330,7 @@ def identify_ball(video_path):
                 radius = 8.0  
 
             if center is not None:
+                serve_anchor = center.copy() 
                 center_int = (int(center[0]), int(center[1]))
                 if prev_center is not None:
                     prev_vel = center - prev_center
@@ -159,6 +339,42 @@ def identify_ball(video_path):
                 # red dot + yellow circle for chosen ball
                 cv2.circle(ct_img, center_int, 3, (0, 0, 255), -1)
                 cv2.circle(ct_img, center_int, int(radius), (0, 255, 255), 2)
+        else:
+            if rally_age is None:
+                rally_age = 0
+            else:
+                rally_age += 1
+
+            center, box, candidates = identify_rally(
+                contours,
+                frame_shape=img.shape,
+                hsv_img=hsv_img,
+                prev_center=prev_center,
+                prev_vel=prev_vel,
+                frame_idx=frame_idx,
+                serve_anchor=serve_anchor,
+                rally_age=rally_age,
+            )
+
+            # draw all candidates as blue boxes
+            for d in candidates:
+                cv2.drawContours(ct_img, [d["box"]], -1, (255, 0, 0), 2)
+
+
+            if center is None and prev_center is not None:
+                center = prev_center + prev_vel
+                # assume constant velocity
+            if center is not None:
+                center_int = (int(center[0]), int(center[1]))
+                if prev_center is not None:
+                    prev_vel = center - prev_center
+                prev_center = center
+
+                # red dot + yellow box for chosen ball
+                cv2.circle(ct_img, center_int, 3, (0, 0, 255), -1)
+                if box is not None:
+                    cv2.drawContours(ct_img, [box], -1, (0, 255, 255), 2)
+            
 
         cts.append(ct_img)
         frame_idx += 1
@@ -179,7 +395,7 @@ def identify_ball(video_path):
         cv2.putText(
             fg_annot,
             f"Frame {idx}",
-            (30, 60),
+            (30, 100),
             font,
             1.0,
             255,
@@ -201,7 +417,7 @@ def identify_ball(video_path):
         cv2.putText(
             fgT_annot,
             f"Frame {idx}",
-            (30, 60),
+            (30, 100),
             font,
             1.0,
             255,
@@ -222,7 +438,7 @@ def identify_ball(video_path):
         cv2.putText(
             ct_annot,
             f"Frame {idx}",
-            (30, 60),
+            (30, 100),
             font,
             1.0,
             (255, 255, 255),
