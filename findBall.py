@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import math
+from thresholding import threshold_imgs
 
 def identify_serve(contours, frame_shape, hsv_img=None, prev_center=None, frame_idx=None):
     h, w = frame_shape[:2]
@@ -456,4 +457,6 @@ def identify_ball(video_path):
 # identify_ball([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
 
 
-identify_ball("./footage/_imgStabLK.avi")
+# identify_ball("./footage/_imgStabLK.avi")
+
+
