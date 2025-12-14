@@ -15,16 +15,16 @@ def output_video(images, vid_name, isColor=True):
     )
     for idx, frame in enumerate(images):
         frame_annot = frame.copy()
-        cv2.putText(
-            frame_annot,
-            f"Frame {idx}",
-            (30, 100),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.0,
-            255,
-            2,
-            cv2.LINE_AA,
-        )
+        # cv2.putText(
+        #     frame_annot,
+        #     f"Frame {idx}",
+        #     (30, 100),
+        #     cv2.FONT_HERSHEY_SIMPLEX,
+        #     1.0,
+        #     255,
+        #     2,
+        #     cv2.LINE_AA,
+        # )
         video_wr.write(frame_annot)
     video_wr.release()
 
