@@ -50,8 +50,8 @@ def identify_serve(contours, frame_shape, prev_center=None, frame_idx=None):
 
         center = np.array([x0, y0], dtype=np.float32)
 
-        if not (0.2 * w <= center[0] <= 0.8 * w and 0.2 * h <= center[1] <= 0.7 * h):
-            continue
+        # if not (0.2 * w <= center[0] <= 0.8 * w and 0.2 * h <= center[1] <= 0.7 * h):
+        #     continue
 
         score = 2.0 * circularity + 1.0 * area_ratio
 
@@ -171,13 +171,13 @@ def identify_rally(
         center = np.array([cx, cy], dtype=np.float32)
 
         # tighter search window right after serve (first ~30 rally frames)
-        if rally_age is not None and rally_age <= 30:
-            if not (0.30 * w <= center[0] <= 0.70 * w):
-                continue
+        # if rally_age is not None and rally_age <= 30:
+        #     if not (0.30 * w <= center[0] <= 0.70 * w):
+        #         continue
 
-        # table band constraint
-        if center[1] < 0.3 * h or center[1] > 0.7 * h:
-            continue
+        # # table band constraint
+        # if center[1] < 0.3 * h or center[1] > 0.7 * h:
+        #     continue
 
         dist_pred = float(np.linalg.norm(center - pred_center)) if pred_center is not None else None
         dist_anchor = float(np.linalg.norm(center - anchor_center)) if anchor_center is not None else None

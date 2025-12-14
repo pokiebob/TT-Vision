@@ -50,22 +50,44 @@ def calculate_flow(imageNames):
     video_wr.release()
 
 
-def calc_sparse_flow(imageNames):
+def calc_sparse_flow(imageNames, vid=None):
 
     flow_imgs = []
 
-    oldImg = cv2.imread(f"./footage/frames/{imageNames[0]}")
+    if vid is not None:
+        cap = cv2.VideoCapture(vid)
+        if not cap.isOpened():
+            print("Error: Could not open video file.")
+
+        frames = []
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            frames.append(frame)
+
+    if vid is None:
+        oldImg = cv2.imread(f"./footage/frames/{imageNames[0]}")
+    else:
+        oldImg = frames[0]
     oldImg_gray = cv2.cvtColor(oldImg, cv2.COLOR_BGR2GRAY)
-    h, w = oldImg_gray.shape
-    mask3070 = np.zeros_like(oldImg_gray)
-    cv2.rectangle(mask3070, (round(w*0.25), round(h*0.25)), (round(w*0.75), round(h*0.75)), 255, -1)
-    keypoints = cv2.goodFeaturesToTrack(oldImg_gray, mask=mask3070, maxCorners=25, qualityLevel=0.5, minDistance=10, blockSize=5)
+    cv2.imwrite("./footage/test.jpg", oldImg_gray)
+    # h, w = oldImg_gray.shape
+    # mask3070 = np.zeros_like(oldImg_gray)
+    # cv2.rectangle(mask3070, (round(w*0.25), round(h*0.25)), (round(w*0.75), round(h*0.75)), 255, -1)
+    keypoints = cv2.goodFeaturesToTrack(oldImg_gray, mask=None, maxCorners=25, qualityLevel=0.2, minDistance=10, blockSize=5)
+    print(keypoints)
 
     warp_matrices = []
 
-    for i in tqdm(range(1, len(imageNames))):
+    nFrames = len(imageNames) if vid is None else len(frames)
+    for i in tqdm(range(1, nFrames)):
         
-        newImg = cv2.imread(f"./footage/frames/{imageNames[i]}")
+        if vid is None:
+            newImg = cv2.imread(f"./footage/frames/{imageNames[i]}")
+        else:
+            newImg = frames[i]
         newImg_gray = cv2.cvtColor(newImg, cv2.COLOR_BGR2GRAY)
 
         mask = np.zeros_like(oldImg)
@@ -76,7 +98,6 @@ def calc_sparse_flow(imageNames):
         good_new = newpoints[st == 1]
 
         affine = cv2.estimateAffine2D(good_old, good_new)[0]
-        hom = cv2.findHomography(good_old, good_new)[0]
         warp_matrices.append(affine)
 
         for i, (new, old) in enumerate(zip(good_new, good_old)):
@@ -183,8 +204,10 @@ def stabilize(imageNames):
     
 
 
-calculate_flow([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
+#calculate_flow([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
 
-stabilize([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
+#stabilize([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
 
-calc_sparse_flow([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
+#calc_sparse_flow([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
+
+calc_sparse_flow([], vid="./footage/_erodeDilate.avi")

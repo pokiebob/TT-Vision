@@ -125,5 +125,47 @@ def threshold_imgs(imageNames, images=None):
     output_video(fgs, "_thresholdedFG", isColor=False)
 
 
+def erode_dilate(vid):
+    cap = cv2.VideoCapture(vid)
+    if not cap.isOpened():
+        print("Error: Could not open video file.")
+        sys.exit()
+    
+    cap2 = cv2.VideoCapture("./footage/_cropped.avi")
 
-threshold_imgs([], images=crop_video("./footage/_imgStabLK.avi", 0.25, 0.85, 0.3, 0.7))
+    element = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2), (1, 1))
+    element2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5), (2, 2))
+
+    eroded_frames = []
+    contoured_frames = []
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        ret2, frame2 = cap2.read()
+        if not ret2:
+            break
+
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        #eroded = cv2.erode(frame, element)
+        #eroded = cv2.dilate(eroded, element2)
+        eroded = cv2.morphologyEx(frame, cv2.MORPH_OPEN, element, iterations=1)
+        eroded = cv2.morphologyEx(frame, cv2.MORPH_OPEN, element, iterations=2)
+        cts, _ = cv2.findContours(eroded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        cts = [ct for ct in cts if cv2.contourArea(ct) > 50]
+
+        cv2.drawContours(frame2, cts, -1, (0,255,0), 2)
+
+        eroded_frames.append(eroded)
+        contoured_frames.append(frame2)
+
+    output_video(eroded_frames, "_erodeDilate", isColor=False)
+    output_video(contoured_frames, "_erodedContours", isColor=True)
+
+erode_dilate("./footage/_thresholded.avi")
+
+#threshold_imgs([], images=crop_video("./footage/_imgStabLK.avi", 0.25, 0.85, 0.3, 0.7))
