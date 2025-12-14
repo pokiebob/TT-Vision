@@ -156,7 +156,7 @@ def erode_dilate(vid):
         eroded = cv2.morphologyEx(frame, cv2.MORPH_OPEN, element, iterations=2)
         cts, _ = cv2.findContours(eroded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        cts = [ct for ct in cts if cv2.contourArea(ct) > 50]
+        cts = [cv2.convexHull(ct) for ct in cts if cv2.contourArea(ct) > 50]
 
         cv2.drawContours(frame2, cts, -1, (0,255,0), 2)
 
