@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import math
-from thresholding import threshold_imgs
+# from thresholding import threshold_imgs
 
 def identify_serve(contours, frame_shape, hsv_img=None, prev_center=None, frame_idx=None):
     h, w = frame_shape[:2]
@@ -37,12 +37,6 @@ def identify_serve(contours, frame_shape, hsv_img=None, prev_center=None, frame_
         area_ratio = area / (circle_area + 1e-6)
 
         center = np.array([x, y], dtype=np.float32)
-
-        # spatial filters: serve will only occur around the table
-        if center[1] < .3 * h or center[1] > .7 * h:
-            continue
-        if center[0] < .3 * w or center[0] > .7 * w:
-            continue
 
         score = 2.0 * circularity + 1.0 * area_ratio
 
@@ -454,9 +448,8 @@ def identify_ball(video_path):
 
 # -------
 
-# identify_ball([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
 
-
-# identify_ball("./footage/_imgStabLK.avi")
-
+# identify_ball("./footage/_cropped.avi")
+identify_ball("./footage/_thresholded.avi")
+# identify_ball("./footage/_thresholdedFG.avi")
 

@@ -39,7 +39,7 @@ def calculate_flow(imageNames):
         cv2.putText(
             frame_annot,
             f"Frame {idx}",
-            (30, 60),
+            (30, 100),
             font,
             1.0,
             255,
@@ -96,7 +96,7 @@ def calc_sparse_flow(imageNames):
     video_wr = cv2.VideoWriter("./footage/_lkFlow.avi", cv2.VideoWriter.fourcc(*"MJPG"), 50.0, (frame_size[1], frame_size[0]), isColor=True)
     for idx, frame in enumerate(flow_imgs):
         frame_annot = frame.copy()
-        cv2.putText(frame_annot, f"Frame {idx}", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.0, 255, 2, cv2.LINE_AA)
+        cv2.putText(frame_annot, f"Frame {idx}", (30, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, 255, 2, cv2.LINE_AA)
         video_wr.write(frame_annot)
     video_wr.release()
 
@@ -177,7 +177,7 @@ def stabilize(imageNames):
     video_wr = cv2.VideoWriter("./footage/_imgStabLK.avi", cv2.VideoWriter.fourcc(*"MJPG"), 50.0, (frame_size[1], frame_size[0]), isColor=True)
     for idx, frame in enumerate(stab_frames):
         frame_annot = frame.copy()
-        cv2.putText(frame_annot, f"Frame {idx}", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.0, 255, 2, cv2.LINE_AA)
+        cv2.putText(frame_annot, f"Frame {idx}", (30, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, 255, 2, cv2.LINE_AA)
         video_wr.write(frame_annot)
     video_wr.release()
     
