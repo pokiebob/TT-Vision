@@ -134,10 +134,9 @@ def erode_dilate(vid, min_area=50):
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         eroded = cv2.morphologyEx(frame, cv2.MORPH_OPEN, element, iterations=1)
-        eroded = cv2.morphologyEx(frame, cv2.MORPH_OPEN, element, iterations=2)
 
         cts, _ = cv2.findContours(eroded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cts = [cv2.convexHull(ct) for ct in cts if cv2.contourArea(ct) > float(min_area)]
+        cts = [ct for ct in cts if cv2.contourArea(ct) > float(min_area)]
 
         eroded_frames.append(eroded)
         contours_by_frame.append(cts)

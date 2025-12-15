@@ -1,7 +1,8 @@
 import cv2
 import numpy as np
 import math
-from thresholding import erode_dilate
+from thresholding import erode_dilate, output_video
+from tqdm import tqdm
 
 
 def identify_serve(contours, frame_shape, prev_center=None, frame_idx=None):
@@ -552,10 +553,153 @@ def identify_ball(video_path, contours_by_frame, mode="mask"):
     video_wr.release()
 
 
-contours_by_frame = erode_dilate("./footage/_thresholded.avi", min_area=50)
+def find_ball2(video_path, min_area=50):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Could not open video: {video_path}")
+
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frame_size = (w, h)
+
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append(frame)
+
+    masked_grays = []
+
+    contours_by_frame = erode_dilate("./footage/_thresholded.avi", min_area=50)
+    prev_lines = []
+
+    for i, contours in enumerate(contours_by_frame):
+        min_rects = [cv2.minAreaRect(ct) for ct in contours]
+        min_boxes = np.int64(np.array([cv2.boxPoints(rect) for rect in min_rects]))
+        boxes_filt = {"pass": [], "fail": []}
+
+        contour_edge_frame = np.zeros_like(cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY))
+        pass_box_centers = []
+        pass_box_lines = []
+
+        for j, box in enumerate(min_boxes):
+            cx, cy = min_rects[j][0]
+            boxW, boxH = min_rects[j][1]
+
+            angle = np.deg2rad(min_rects[j][2])
+            if boxW < boxH:
+                angle += np.pi/2
+            l = 100
+            pt1, pt2 = (round(cx-l*np.cos(angle)), round(cy-l*np.sin(angle))), (round(cx+l*np.cos(angle)), round(cy+l*np.sin(angle)))
+            [vx, vy, x0, y0] = cv2.fitLine(np.array([pt1, pt2]), cv2.DIST_L2, 0, 0.01, 0.01)
+            slope = vy/(vx+1e-6)
+            intercept = y0 - slope*x0
+            resid = np.ravel(contours[j][..., 1]) - (slope * np.ravel(contours[j][..., 0]) + intercept)
+            mse = np.mean(resid ** 2)
+
+            # check current centers against previous frame's lines
+            if len(prev_lines) > 0:
+                center = np.array([cx, cy])
+                line_dists = []
+                for line in prev_lines:
+                    a = np.array(line[0])
+                    b = np.array(line[1])
+                    proj_param = np.dot(center-a, b-a)/np.dot(b-a,b-a)
+                    if proj_param < 0:
+                        line_dists.append(np.linalg.norm(center-a))
+                    elif proj_param > 1:
+                        line_dists.append(np.linalg.norm(center-b))
+                    elif 0.46 < proj_param < 0.54:
+                        line_dists.append(99999)
+                    else:
+                        [vx2, vy2, x02, y02] = cv2.fitLine(np.array(line), cv2.DIST_L2, 0, 0.01, 0.01)
+                        A, B = vy2, -vx2
+                        C = -(A*x02 + B*y02)
+                        line_dists.append((np.abs(A*cx + B*cy + C)/np.sqrt(A*A + B*B))[0])
+                
+                good_lines = []
+                for k, dist in enumerate(line_dists):
+                    if dist < 100:
+                        [vx2, vy2, x02, y02] = cv2.fitLine(np.array(prev_lines[k]), cv2.DIST_L2, 0, 0.01, 0.01)
+                        if np.abs(vy2/(vx2+1e-6) - slope) < 1:
+                            good_lines.append(dist)
+                
+                if len(good_lines) == 0:
+                    print(f"Frame {i}: no good lines")
+                    continue
+
+                print(f"Frame {i}: found good lines")
+
+
+            hsv = cv2.cvtColor(frames[i], cv2.COLOR_BGR2HSV)
+
+            mask = np.zeros_like(cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY)) 
+            cv2.drawContours(mask, [box], -1, 255, cv2.FILLED)
+            meanS = cv2.mean(hsv[..., 1], mask=mask)[0]
+
+            masked = cv2.bitwise_and(frames[i], frames[i], mask=mask)
+            masked_gray = cv2.cvtColor(masked, cv2.COLOR_BGR2GRAY)
+            # masked_coords = np.where(masked_gray != 0)
+            # new_vals = cv2.equalizeHist(masked_gray[masked_coords])
+            # masked_gray[masked_coords] = np.ravel(new_vals)
+
+            # edges = cv2.Canny(cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY), 40, 100)
+            # edges = cv2.bitwise_and(edges, edges, mask=cv2.erode(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3), (1,1))))
+            # contour_edge_frame = contour_edge_frame + edges
+
+            # try:
+            #     el_M, el_m = cv2.fitEllipse(contours[j])[1]
+            #     el_cover = (np.pi * el_M * el_m) / cv2.contourArea(contours[j])
+            # except:
+            #     el_cover = 1
+
+            if not (20 < cv2.contourArea(box) < 2000):  # not too big or small
+                boxes_filt["fail"].append(box)
+            elif boxW > 20 and boxH > 20:  # should be thin
+                boxes_filt["fail"].append(box)
+            elif meanS > 100:  # too bright or colorful to be a ball
+                boxes_filt["fail"].append(box)
+            elif np.abs(slope) > 1.7:  # too steep to be the ball
+                boxes_filt["fail"].append(box)
+            elif mse > 40:  # not close enough to a line / stretched out
+                boxes_filt["fail"].append(box)
+            # elif el_cover < 5:
+            #     boxes_filt["fail"].append(box)
+            else:
+                boxes_filt["pass"].append(box)
+                cv2.circle(frames[i], np.array([int(cx), int(cy)]), 3, (0, 0, 255), -1)
+
+                cv2.line(frames[i], pt1, pt2, (120,255,120), 1)
+                pass_box_centers.append((cx, cy))
+                pass_box_lines.append([pt1, pt2])
+
+        passing = boxes_filt["pass"]
+        ball = (-1, [])
+
+        center_pos = []
+        for j, cand in enumerate(passing):
+            center_pos.append(pass_box_centers[j]/w)
+            
+        # select nearest to center line if something relatively close by exists (should pick out ball at this point)
+
+        masked_grays.append(contour_edge_frame)
+
+        prev_lines = pass_box_lines
+
+        cv2.drawContours(frames[i], boxes_filt["pass"], -1, (0,255,0), 2)
+        cv2.drawContours(frames[i], boxes_filt["fail"], -1, (150,150,255), 1)
+
+    output_video(frames, "_erodeDilateRects", isColor=True)
+    output_video(masked_grays, "_maskedGray", isColor=False)
+    
+
+#contours_by_frame = erode_dilate("./footage/_thresholded.avi", min_area=50)
 
 # identify_ball("./footage/_erodeDilate.avi", contours_by_frame, mode="mask")
 
 # or
 
-identify_ball("./footage/_cropped.avi", contours_by_frame, mode="no_mask")
+#identify_ball("./footage/_cropped.avi", contours_by_frame, mode="no_mask")
+
+find_ball2("./footage/_cropped.avi")
