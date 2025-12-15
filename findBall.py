@@ -86,22 +86,25 @@ def identify_rally(
     rally_age=None,
     miss_count=0,
     stable_run=0,
+    force_reverse=False,
 ):
     h, w = frame_shape[:2]
 
-    # --- prediction ---
     pred_center = None
     pred_center_rev = None
     if prev_center is not None and prev_vel is not None:
-        pred_center = prev_center + prev_vel
-        if miss_count >= 3:
-            pred_center_rev = prev_center - 1.0 * prev_vel  # allow opposite direction in REACQ
+        # main prediction
+        pred_center = (prev_center - prev_vel) if force_reverse else (prev_center + prev_vel)
 
-    # early-rally anchor (optional)
+        if not force_reverse and miss_count >= 3:
+            pred_center_rev = prev_center - prev_vel
+        else:
+            pred_center_rev = None
+
+    # early-rally anchor 
     use_anchor = (serve_anchor is not None) and (rally_age is not None) and (rally_age <= 20)
     anchor_center = serve_anchor if use_anchor else None
 
-    # --- light filters ---
     MIN_AREA = 15
     MAX_AREA = 1400
     MIN_BBOX = 3
@@ -154,11 +157,17 @@ def identify_rally(
 
         dist_pred = None
         if pred_center is not None:
-            d_fwd = float(np.linalg.norm(center - pred_center))
-            d = d_fwd
+            d_main = float(np.linalg.norm(center - pred_center))
+
             if pred_center_rev is not None:
-                d_rev = float(np.linalg.norm(center - pred_center_rev))
-                d = min(d_fwd, d_rev)
+                d_alt = float(np.linalg.norm(center - pred_center_rev))
+                d = min(d_main, d_alt)
+            else:
+                d = d_main
+
+            if force_reverse:
+                d = d_main
+
             dist_pred = d
             if dist_pred > gate:
                 rej["pred_gate"] += 1
@@ -178,10 +187,10 @@ def identify_rally(
         score = 0.0
         if dist_pred is not None:
             sigma = 140.0 if miss_count == 0 else 220.0
-            score += 3.0 * math.exp(-(dist_pred**2) / (2.0 * sigma * sigma))
+            score += 8.0 * math.exp(-(dist_pred**2) / (2.0 * sigma * sigma))
 
         score += 1.2 * min(elong / 3.0, 1.5)
-        score += 3.5 * align
+        score += 2.0 * align
 
         dist_anchor = None
         if anchor_center is not None:
@@ -213,7 +222,7 @@ def identify_rally(
             best_box = box
             best_info = info
 
-    # debug print
+    # debug print (kept as you had it)
     if frame_idx is not None and frame_idx < 175:
         mode = "TRACK" if miss_count < 3 else "REACQ"
         print(f"\n[frame {frame_idx}] mode={mode} miss={miss_count} stable={stable_run} contours={len(contours)} candidates={len(candidates)} mode={mode}")
@@ -245,7 +254,6 @@ def identify_rally(
 
     return best_center, best_box, candidates, best_info
 
-
 def identify_ball(video_path, contours_by_frame, mode="mask"):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -260,6 +268,8 @@ def identify_ball(video_path, contours_by_frame, mode="mask"):
     prev_center = None
     prev_vel = np.array([0.0, 0.0], dtype=np.float32)
 
+    pred_center_state = None
+
     serve_anchor = None
     rally_age = None
     miss_count = 0
@@ -267,8 +277,9 @@ def identify_ball(video_path, contours_by_frame, mode="mask"):
     prev_best_info = None
     prev_best_frame = None
 
-    stable_run = 0 
+    stable_run = 0
     hit_cooldown = 0
+    reverse_search = 0
 
     frame_idx = 0
     n_ct = len(contours_by_frame)
@@ -314,8 +325,8 @@ def identify_ball(video_path, contours_by_frame, mode="mask"):
                 cc = (int(cand_center[0]), int(cand_center[1]))
                 cv2.circle(ct_img, cc, int(cand_radius), (0, 255, 0), 1)
 
-            if center is None and prev_center is not None:
-                center = prev_center + prev_vel
+            if center is None and pred_center_state is not None:
+                center = pred_center_state + prev_vel
                 radius = 8.0
 
             if center is not None:
@@ -324,6 +335,7 @@ def identify_ball(video_path, contours_by_frame, mode="mask"):
                 if prev_center is not None:
                     prev_vel = center - prev_center
                 prev_center = center
+                pred_center_state = center.copy()  
 
                 cv2.circle(ct_img, center_int, 3, (0, 0, 255), -1)
                 cv2.circle(ct_img, center_int, int(radius), (0, 255, 255), 2)
@@ -338,81 +350,93 @@ def identify_ball(video_path, contours_by_frame, mode="mask"):
                 prev_best_frame = None
                 stable_run = 0
                 hit_cooldown = 0
+                reverse_search = 0
+                pred_center_state = prev_center.copy() if prev_center is not None else None
 
             if hit_cooldown > 0:
                 hit_cooldown -= 1
                 center, box, candidates, best_info = None, None, [], None
-                miss_count = max(miss_count, 3)
                 stable_run = 0
+                coasting = True
             else:
+                pred_for_rally = pred_center_state if pred_center_state is not None else prev_center
+
                 center, box, candidates, best_info = identify_rally(
                     contours,
                     frame_shape=ct_img.shape,
-                    prev_center=prev_center,
+                    prev_center=pred_for_rally,
                     prev_vel=prev_vel,
                     frame_idx=frame_idx,
                     serve_anchor=serve_anchor,
                     rally_age=rally_age,
                     miss_count=miss_count,
                     stable_run=stable_run,
+                    force_reverse=(reverse_search > 0),
                 )
 
                 for d in candidates:
                     cv2.drawContours(ct_img, [d["box"]], -1, (0, 255, 0), 2)
 
-                # stability
+                # snapshot stability coming INTO this frame (before we update it)
+                stable_in = stable_run
+
+                # stability update (based on current chosen candidate)
                 if best_info is not None and best_info["dist_pred"] is not None and best_info["dist_pred"] < 40.0:
                     stable_run += 1
                 else:
                     stable_run = 0
 
-                # HIT OVERRIDE 
+                if reverse_search > 0:
+                    reverse_search -= 1
+                if box is not None:
+                    reverse_search = 0
+
+                coasting = False
+
+                # --- HIT (bbox explode) trigger ---
                 if (
-                    center is not None
-                    and best_info is not None
+                    best_info is not None
                     and prev_best_info is not None
                     and prev_best_frame is not None
-                    and rally_age is not None
-                    and rally_age >= 12 
-                    and stable_run >= 3
-                    and (frame_idx - prev_best_frame) <= 3 
                     and best_info["dist_pred"] is not None
+                    and stable_in >= 8
+                    and (frame_idx - prev_best_frame) <= 2
                 ):
-                    prev_c = np.array([prev_best_info["cx"], prev_best_info["cy"]], dtype=np.float32)
-                    jump = float(np.linalg.norm(center - prev_c))
-
                     prev_bb_area = float(prev_best_info["bw"] * prev_best_info["bh"])
                     curr_bb_area = float(best_info["bw"] * best_info["bh"])
-                    size_ratio = max(
-                        curr_bb_area / (prev_bb_area + 1e-6),
-                        (prev_bb_area + 1e-6) / (curr_bb_area + 1e-6),
-                    )
+                    size_ratio = curr_bb_area / (prev_bb_area + 1e-6)
 
-                    # dynamic threshold based on speed
-                    vnorm = float(np.linalg.norm(prev_vel)) if prev_vel is not None else 0.0
-                    jump_thr = max(95.0, 3.0 * vnorm + 40.0)
+                    BIG_ABS_AREA = 900.0
+                    BIG_RATIO = 6.0
+                    MID_DIST = 50.0
 
-                    gate = 160.0 if miss_count == 0 else 320.0
-                    far_from_pred = best_info["dist_pred"] > 0.70 * gate
-
-                    HIT_SIZE_RATIO = 3.0
-
-                    if (jump > jump_thr) and far_from_pred and (size_ratio > HIT_SIZE_RATIO):
+                    if (curr_bb_area > BIG_ABS_AREA or size_ratio > BIG_RATIO) and best_info["dist_pred"] > MID_DIST:
                         if frame_idx < 175:
                             print(
-                                f"  >>> HIT OVERRIDE: jump={jump:.1f}px (thr={jump_thr:.1f}) "
-                                f"dist_pred={best_info['dist_pred']:.1f} size_ratio={size_ratio:.2f} "
-                                f"(forcing MISS + REACQ)"
+                                f"  >>> HIT (bbox explode): curr_bb_area={curr_bb_area:.1f} "
+                                f"prev_bb_area={prev_bb_area:.1f} ratio={size_ratio:.2f} "
+                                f"dist_pred={best_info['dist_pred']:.1f} (forcing MISS + REACQ)"
                             )
-                        hit_cooldown = 4
+                        hit_cooldown = 6
+                        reverse_search = 12
                         center, box = None, None
-                        miss_count = max(miss_count, 3)
                         stable_run = 0
 
-            # coast if missing
-            if center is None and prev_center is not None:
+                        prev_vel = 0.6 * prev_vel
+
+            # coasting
+            if center is None and pred_center_state is not None:
                 miss_count += 1
-                center = prev_center + prev_vel
+                coasting = True
+
+                step = prev_vel
+                if reverse_search > 0:
+                    step = -step  
+
+                pred_center_state = pred_center_state + step
+
+   
+                center = pred_center_state.copy()
                 prev_vel = 0.90 * prev_vel
                 box = None
             else:
@@ -421,14 +445,17 @@ def identify_ball(video_path, contours_by_frame, mode="mask"):
             # draw + update state
             if center is not None:
                 center_int = (int(center[0]), int(center[1]))
-                if prev_center is not None:
-                    prev_vel = center - prev_center
-                prev_center = center
-
                 cv2.circle(ct_img, center_int, 3, (0, 0, 255), -1)
+
+                
+                if not coasting:
+                    if prev_center is not None:
+                        prev_vel = center - prev_center
+                    prev_center = center
+                    pred_center_state = center.copy()  
+
                 if box is not None:
                     cv2.drawContours(ct_img, [box], -1, (0, 255, 255), 2)
-
                     prev_best_info = best_info
                     prev_best_frame = frame_idx
 
