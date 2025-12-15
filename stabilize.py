@@ -73,10 +73,10 @@ def calc_sparse_flow(imageNames, vid=None):
         oldImg = frames[0]
     oldImg_gray = cv2.cvtColor(oldImg, cv2.COLOR_BGR2GRAY)
     cv2.imwrite("./footage/test.jpg", oldImg_gray)
-    # h, w = oldImg_gray.shape
-    # mask3070 = np.zeros_like(oldImg_gray)
-    # cv2.rectangle(mask3070, (round(w*0.25), round(h*0.25)), (round(w*0.75), round(h*0.75)), 255, -1)
-    keypoints = cv2.goodFeaturesToTrack(oldImg_gray, mask=None, maxCorners=25, qualityLevel=0.2, minDistance=10, blockSize=5)
+    h, w = oldImg_gray.shape
+    mask3070 = np.zeros_like(oldImg_gray)
+    cv2.rectangle(mask3070, (round(w*0.25), round(h*0.25)), (round(w*0.75), round(h*0.75)), 255, -1)
+    keypoints = cv2.goodFeaturesToTrack(oldImg_gray, mask=mask3070, maxCorners=25, qualityLevel=0.5, minDistance=10, blockSize=5)
     print(keypoints)
 
     warp_matrices = []
@@ -204,10 +204,10 @@ def stabilize(imageNames):
     
 
 
-calculate_flow([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
+#calculate_flow([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
 
 stabilize([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
 
-calc_sparse_flow([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
+#calc_sparse_flow([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
 
-calc_sparse_flow([], vid="./footage/_erodeDilate.avi")
+#calc_sparse_flow([], vid="./footage/_erodeDilate.avi")
