@@ -9,7 +9,6 @@ def identify_serve(contours, frame_shape, prev_center=None, frame_idx=None):
 
     MIN_AREA = 20
     MAX_AREA = 280
- 
 
     best_score = -1.0
     best_center = None
@@ -23,17 +22,14 @@ def identify_serve(contours, frame_shape, prev_center=None, frame_idx=None):
 
         x, y, bw, bh = cv2.boundingRect(c)
 
-
         bw_f = float(bw)
         bh_f = float(bh)
 
         extent = area / (bw_f * bh_f + 1e-6)
-
         aspect = min(bw_f, bh_f) / (max(bw_f, bh_f) + 1e-6)
 
         perimeter = float(cv2.arcLength(c, True))
-
-        circularity = 4.0 * math.pi * area / (perimeter * perimeter)
+        circularity = 0.0 if perimeter < 1e-6 else (4.0 * math.pi * area / (perimeter * perimeter))
 
         (x0, y0), radius = cv2.minEnclosingCircle(c)
         radius = float(radius)
@@ -43,9 +39,6 @@ def identify_serve(contours, frame_shape, prev_center=None, frame_idx=None):
 
         center = np.array([x0, y0], dtype=np.float32)
 
-        # if not (0.2 * w <= center[0] <= 0.8 * w and 0.2 * h <= center[1] <= 0.7 * h):
-        #     continue
-
         dist_prev = None
         if prev_center is not None:
             dist_prev = float(np.linalg.norm(center - prev_center))
@@ -54,12 +47,22 @@ def identify_serve(contours, frame_shape, prev_center=None, frame_idx=None):
         if dist_prev is not None:
             score += 1.0 * math.exp(-(dist_prev**2) / (2.0 * (70.0**2)))
 
-
         candidates.append(
-            {"idx": ci, "area": area, "bw": bw_f, "bh": bh_f, "extent": extent,
-             "aspect": aspect, "circ": circularity, "area_ratio": area_ratio,
-             "cx": float(center[0]), "cy": float(center[1]), "r": radius,
-             "dist_prev": dist_prev, "score": float(score)}
+            {
+                "idx": ci,
+                "area": area,
+                "bw": bw_f,
+                "bh": bh_f,
+                "extent": extent,
+                "aspect": aspect,
+                "circ": circularity,
+                "area_ratio": area_ratio,
+                "cx": float(center[0]),
+                "cy": float(center[1]),
+                "r": radius,
+                "dist_prev": dist_prev,
+                "score": float(score),
+            }
         )
 
         if score > best_score:
@@ -67,14 +70,12 @@ def identify_serve(contours, frame_shape, prev_center=None, frame_idx=None):
             best_center = center
             best_radius = radius
 
-    # if frame_idx is not None:
-    #     print(f"\n[frame {frame_idx}] serve contours={len(contours)} candidates={len(candidates)}")
-
     cand_tuples = [
         (np.array([d["cx"], d["cy"]], dtype=np.float32), d["r"], d["circ"], d["area_ratio"], d["score"])
         for d in candidates
     ]
     return best_center, best_radius, cand_tuples
+
 
 def identify_rally(
     contours,
@@ -87,13 +88,13 @@ def identify_rally(
     miss_count=0,
     stable_run=0,
     force_reverse=False,
+    prev_info=None,
 ):
     h, w = frame_shape[:2]
 
     pred_center = None
     pred_center_rev = None
     if prev_center is not None and prev_vel is not None:
-        # main prediction
         pred_center = (prev_center - prev_vel) if force_reverse else (prev_center + prev_vel)
 
         if not force_reverse and miss_count >= 3:
@@ -101,11 +102,11 @@ def identify_rally(
         else:
             pred_center_rev = None
 
-    # early-rally anchor 
+    # early-rally anchor
     use_anchor = (serve_anchor is not None) and (rally_age is not None) and (rally_age <= 20)
     anchor_center = serve_anchor if use_anchor else None
 
-    MIN_AREA = 15
+    MIN_AREA = 40
     MAX_AREA = 1400
     MIN_BBOX = 3
     MIN_EXTENT = 0.12
@@ -129,6 +130,17 @@ def identify_rally(
         if vnorm > 1e-3:
             vel_dir = prev_vel / vnorm
 
+    prev_bboxA = None
+    prev_r = None
+    prev_elong = None
+    if prev_info is not None:
+        if prev_info.get("bbox_area") is not None:
+            prev_bboxA = float(prev_info["bbox_area"])
+        if prev_info.get("r") is not None:
+            prev_r = float(prev_info["r"])
+        if prev_info.get("elong") is not None:
+            prev_elong = float(prev_info["elong"])
+
     for ci, c in enumerate(contours):
         area = float(cv2.contourArea(c))
         if area < MIN_AREA or area > MAX_AREA:
@@ -141,6 +153,17 @@ def identify_rally(
         if bw < MIN_BBOX or bh < MIN_BBOX:
             rej["bbox"] += 1
             continue
+
+        perim = float(cv2.arcLength(c, True))
+        circ = 0.0 if perim < 1e-6 else (4.0 * math.pi * area / (perim * perim))
+
+        hull = cv2.convexHull(c)
+        hull_area = float(cv2.contourArea(hull))
+        solidity = area / (hull_area + 1e-6)
+
+        (_, _), r = cv2.minEnclosingCircle(c)
+        r = float(r)
+        fill = area / (math.pi * r * r + 1e-6)
 
         extent = area / (bw * bh + 1e-6)
         if extent < MIN_EXTENT:
@@ -192,6 +215,24 @@ def identify_rally(
         score += 1.2 * min(elong / 3.0, 1.5)
         score += 2.0 * align
 
+        bboxA = float(bw * bh)
+
+        logA = None
+        logr = None
+        loge = None
+
+        if prev_bboxA is not None:
+            logA = math.log((bboxA + 1e-6) / (prev_bboxA + 1e-6))
+            # score += 1 * math.exp(-(logA * logA) / (2.0 * (0.55 ** 2)))
+
+        if prev_r is not None:
+            logr = math.log((r + 1e-6) / (prev_r + 1e-6))
+            # score += 1 * math.exp(-(logr * logr) / (2.0 * (0.55 ** 2)))
+
+        if prev_elong is not None:
+            loge = math.log((elong + 1e-6) / (prev_elong + 1e-6))
+            score += 1 * math.exp(-(loge * loge) / (2.0 * (0.70 ** 2)))
+
         dist_anchor = None
         if anchor_center is not None:
             dist_anchor = float(np.linalg.norm(center - anchor_center))
@@ -200,7 +241,8 @@ def identify_rally(
 
         info = {
             "idx": ci,
-            "area": area,
+            "area": float(area),
+            "bbox_area": float(bboxA),
             "cx": float(cx),
             "cy": float(cy),
             "bw": float(bw),
@@ -213,6 +255,22 @@ def identify_rally(
             "rect": rect,
             "box": box,
             "score": float(score),
+
+            # shape
+            "perim": float(perim),
+            "circ": float(circ),
+            "hull_area": float(hull_area),
+            "solidity": float(solidity),
+            "r": float(r),
+            "fill": float(fill),
+
+            # prev scale
+            "prev_bboxA": prev_bboxA,
+            "prev_r": prev_r,
+            "prev_elong": prev_elong,
+            "logA": None if logA is None else float(logA),
+            "logr": None if logr is None else float(logr),
+            "loge": None if loge is None else float(loge),
         }
         candidates.append(info)
 
@@ -222,10 +280,13 @@ def identify_rally(
             best_box = box
             best_info = info
 
-    # debug print (kept as you had it)
-    if frame_idx is not None and frame_idx < 175:
+    # debug print
+    if frame_idx is not None and 200 < frame_idx < 300:
         mode = "TRACK" if miss_count < 3 else "REACQ"
-        print(f"\n[frame {frame_idx}] mode={mode} miss={miss_count} stable={stable_run} contours={len(contours)} candidates={len(candidates)} mode={mode}")
+        print(
+            f"\n[frame {frame_idx}] mode={mode} miss={miss_count} stable={stable_run} "
+            f"contours={len(contours)} candidates={len(candidates)} mode={mode}"
+        )
 
         if len(candidates) == 0:
             print("  rejection counts:", rej)
@@ -233,12 +294,16 @@ def identify_rally(
             if best_info is not None:
                 dp = "" if best_info["dist_pred"] is None else f" dist_pred={best_info['dist_pred']:.1f}"
                 da = "" if best_info["dist_anchor"] is None else f" dist_anchor={best_info['dist_anchor']:.1f}"
+                la = "" if best_info["logA"] is None else f" logA={best_info['logA']:+.2f}"
+                lr = "" if best_info["logr"] is None else f" logr={best_info['logr']:+.2f}"
+                le = "" if best_info["loge"] is None else f" loge={best_info['loge']:+.2f}"
                 print(
                     f"  PICKED cand#{best_info['idx']:03d}: score={best_info['score']:.3f} "
                     f"center=({best_info['cx']:.1f},{best_info['cy']:.1f}) "
-                    f"bbox=({best_info['bw']:.0f}x{best_info['bh']:.0f}) "
+                    f"bbox=({best_info['bw']:.0f}x{best_info['bh']:.0f}) bboxA={best_info['bbox_area']:.0f} "
                     f"extent={best_info['extent']:.2f} elong={best_info['elong']:.2f} "
-                    f"align={best_info['align']:.2f}{dp}{da}"
+                    f"circ={best_info['circ']:.3f} solid={best_info['solidity']:.3f} fill={best_info['fill']:.3f} r={best_info['r']:.1f} "
+                    f"align={best_info['align']:.2f}{dp}{da}{la}{lr}{le}"
                 )
 
             top = sorted(candidates, key=lambda d: d["score"], reverse=True)[:5]
@@ -246,13 +311,20 @@ def identify_rally(
             for d in top:
                 dp = "" if d["dist_pred"] is None else f" dist_pred={d['dist_pred']:.1f}"
                 da = "" if d["dist_anchor"] is None else f" dist_anchor={d['dist_anchor']:.1f}"
+                la = "" if d["logA"] is None else f" logA={d['logA']:+.2f}"
+                lr = "" if d["logr"] is None else f" logr={d['logr']:+.2f}"
+                le = "" if d["loge"] is None else f" loge={d['loge']:+.2f}"
                 print(
                     f"  cand#{d['idx']:03d}: score={d['score']:.3f} "
                     f"center=({d['cx']:.1f},{d['cy']:.1f}) "
-                    f"elong={d['elong']:.2f} align={d['align']:.2f}{dp}{da}"
+                    f"bbox=({d['bw']:.0f}x{d['bh']:.0f}) bboxA={d['bbox_area']:.0f} "
+                    f"extent={d['extent']:.2f} elong={d['elong']:.2f} "
+                    f"circ={d['circ']:.3f} solid={d['solidity']:.3f} fill={d['fill']:.3f} r={d['r']:.1f} "
+                    f"align={d['align']:.2f}{dp}{da}{la}{lr}{le}"
                 )
 
     return best_center, best_box, candidates, best_info
+
 
 def identify_ball(video_path, contours_by_frame, mode="mask"):
     cap = cv2.VideoCapture(video_path)
@@ -335,7 +407,7 @@ def identify_ball(video_path, contours_by_frame, mode="mask"):
                 if prev_center is not None:
                     prev_vel = center - prev_center
                 prev_center = center
-                pred_center_state = center.copy()  
+                pred_center_state = center.copy()
 
                 cv2.circle(ct_img, center_int, 3, (0, 0, 255), -1)
                 cv2.circle(ct_img, center_int, int(radius), (0, 255, 255), 2)
@@ -372,15 +444,15 @@ def identify_ball(video_path, contours_by_frame, mode="mask"):
                     miss_count=miss_count,
                     stable_run=stable_run,
                     force_reverse=(reverse_search > 0),
+                    prev_info=prev_best_info,  # <-- NEW
                 )
 
                 for d in candidates:
                     cv2.drawContours(ct_img, [d["box"]], -1, (0, 255, 0), 2)
 
-                # snapshot stability coming INTO this frame (before we update it)
                 stable_in = stable_run
 
-                # stability update (based on current chosen candidate)
+                # stability update
                 if best_info is not None and best_info["dist_pred"] is not None and best_info["dist_pred"] < 40.0:
                     stable_run += 1
                 else:
@@ -393,7 +465,6 @@ def identify_ball(video_path, contours_by_frame, mode="mask"):
 
                 coasting = False
 
-                # --- HIT (bbox explode) trigger ---
                 if (
                     best_info is not None
                     and prev_best_info is not None
@@ -431,11 +502,10 @@ def identify_ball(video_path, contours_by_frame, mode="mask"):
 
                 step = prev_vel
                 if reverse_search > 0:
-                    step = -step  
+                    step = -step
 
                 pred_center_state = pred_center_state + step
 
-   
                 center = pred_center_state.copy()
                 prev_vel = 0.90 * prev_vel
                 box = None
@@ -447,17 +517,19 @@ def identify_ball(video_path, contours_by_frame, mode="mask"):
                 center_int = (int(center[0]), int(center[1]))
                 cv2.circle(ct_img, center_int, 3, (0, 0, 255), -1)
 
-                
                 if not coasting:
                     if prev_center is not None:
                         prev_vel = center - prev_center
                     prev_center = center
-                    pred_center_state = center.copy()  
+                    pred_center_state = center.copy()
+
+                # update prev_best_info every successful detection (keeps scale continuity alive)
+                if best_info is not None:
+                    prev_best_info = best_info
+                    prev_best_frame = frame_idx
 
                 if box is not None:
                     cv2.drawContours(ct_img, [box], -1, (0, 255, 255), 2)
-                    prev_best_info = best_info
-                    prev_best_frame = frame_idx
 
         annotated_frames.append(ct_img)
         frame_idx += 1
