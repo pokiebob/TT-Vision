@@ -573,6 +573,8 @@ def find_ball2(video_path, min_area=50):
 
     contours_by_frame = erode_dilate("./footage/_thresholded.avi", min_area=50)
     prev_lines = []
+    prev_ball = (-1, -1, [])
+    prev_centered = False
 
     for i, contours in enumerate(contours_by_frame):
         min_rects = [cv2.minAreaRect(ct) for ct in contours]
@@ -580,8 +582,7 @@ def find_ball2(video_path, min_area=50):
         boxes_filt = {"pass": [], "fail": []}
 
         contour_edge_frame = np.zeros_like(cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY))
-        pass_box_centers = []
-        pass_box_lines = []
+        passing = {"centers": [], "angles": [], "lines": [], "boxes": []}
 
         for j, box in enumerate(min_boxes):
             cx, cy = min_rects[j][0]
@@ -599,37 +600,34 @@ def find_ball2(video_path, min_area=50):
             mse = np.mean(resid ** 2)
 
             # check current centers against previous frame's lines
-            if len(prev_lines) > 0:
-                center = np.array([cx, cy])
-                line_dists = []
-                for line in prev_lines:
-                    a = np.array(line[0])
-                    b = np.array(line[1])
-                    proj_param = np.dot(center-a, b-a)/np.dot(b-a,b-a)
-                    if proj_param < 0:
-                        line_dists.append(np.linalg.norm(center-a))
-                    elif proj_param > 1:
-                        line_dists.append(np.linalg.norm(center-b))
-                    elif 0.46 < proj_param < 0.54:
-                        line_dists.append(99999)
-                    else:
-                        [vx2, vy2, x02, y02] = cv2.fitLine(np.array(line), cv2.DIST_L2, 0, 0.01, 0.01)
-                        A, B = vy2, -vx2
-                        C = -(A*x02 + B*y02)
-                        line_dists.append((np.abs(A*cx + B*cy + C)/np.sqrt(A*A + B*B))[0])
+            # if len(prev_lines) > 0:
+            #     center = np.array([cx, cy])
+            #     line_dists = []
+            #     for line in prev_lines:
+            #         a = np.array(line[0])
+            #         b = np.array(line[1])
+            #         proj_param = np.dot(center-a, b-a)/np.dot(b-a,b-a)
+            #         if proj_param < 0:
+            #             line_dists.append(np.linalg.norm(center-a))
+            #         elif proj_param > 1:
+            #             line_dists.append(np.linalg.norm(center-b))
+            #         elif 0.46 < proj_param < 0.54:
+            #             line_dists.append(99999)
+            #         else:
+            #             [vx2, vy2, x02, y02] = cv2.fitLine(np.array(line), cv2.DIST_L2, 0, 0.01, 0.01)
+            #             A, B = vy2, -vx2
+            #             C = -(A*x02 + B*y02)
+            #             line_dists.append((np.abs(A*cx + B*cy + C)/np.sqrt(A*A + B*B))[0])
                 
-                good_lines = []
-                for k, dist in enumerate(line_dists):
-                    if dist < 100:
-                        [vx2, vy2, x02, y02] = cv2.fitLine(np.array(prev_lines[k]), cv2.DIST_L2, 0, 0.01, 0.01)
-                        if np.abs(vy2/(vx2+1e-6) - slope) < 1:
-                            good_lines.append(dist)
+            #     good_lines = []
+            #     for k, dist in enumerate(line_dists):
+            #         if dist < 200:
+            #             [vx2, vy2, x02, y02] = cv2.fitLine(np.array(prev_lines[k]), cv2.DIST_L2, 0, 0.01, 0.01)
+            #             if np.abs(vy2/(vx2+1e-6) - slope) < 1:
+            #                 good_lines.append(dist)
                 
-                if len(good_lines) == 0:
-                    print(f"Frame {i}: no good lines")
-                    continue
-
-                print(f"Frame {i}: found good lines")
+            #     if len(good_lines) == 0:
+            #         continue
 
 
             hsv = cv2.cvtColor(frames[i], cv2.COLOR_BGR2HSV)
@@ -648,11 +646,10 @@ def find_ball2(video_path, min_area=50):
             # edges = cv2.bitwise_and(edges, edges, mask=cv2.erode(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3), (1,1))))
             # contour_edge_frame = contour_edge_frame + edges
 
-            # try:
-            #     el_M, el_m = cv2.fitEllipse(contours[j])[1]
-            #     el_cover = (np.pi * el_M * el_m) / cv2.contourArea(contours[j])
-            # except:
-            #     el_cover = 1
+            dist = -1
+            if prev_ball[0] != -1:
+                center_point = np.array([0.5*(prev_ball[2][0][0] + prev_ball[2][1][0]), 0.5*(prev_ball[2][0][1] + prev_ball[2][1][1])])
+                dist = np.linalg.norm(np.array([cx, cy])-center_point)
 
             if not (20 < cv2.contourArea(box) < 2000):  # not too big or small
                 boxes_filt["fail"].append(box)
@@ -664,31 +661,66 @@ def find_ball2(video_path, min_area=50):
                 boxes_filt["fail"].append(box)
             elif mse > 40:  # not close enough to a line / stretched out
                 boxes_filt["fail"].append(box)
-            # elif el_cover < 5:
+            # elif (prev_ball[0] != -1) and (dist > 200):
             #     boxes_filt["fail"].append(box)
             else:
                 boxes_filt["pass"].append(box)
                 cv2.circle(frames[i], np.array([int(cx), int(cy)]), 3, (0, 0, 255), -1)
 
                 cv2.line(frames[i], pt1, pt2, (120,255,120), 1)
-                pass_box_centers.append((cx, cy))
-                pass_box_lines.append([pt1, pt2])
+                passing["centers"].append(np.array([cx, cy]))
+                passing["angles"].append(angle)
+                passing["lines"].append([pt1, pt2])
+                passing["boxes"].append(box)
 
-        passing = boxes_filt["pass"]
-        ball = (-1, [])
+        print(f"--- Frame {i}: {len(passing['angles'])} passing ---")
 
-        center_pos = []
-        for j, cand in enumerate(passing):
-            center_pos.append(pass_box_centers[j]/w)
-            
-        # select nearest to center line if something relatively close by exists (should pick out ball at this point)
+        def filter_passing(passing_dict, indices):
+            new_passing = {"centers": [], "angles": [], "lines": [], "boxes": []}
+            for i in indices:
+                for field in ["centers", "angles", "lines", "boxes"]:
+                    new_passing[field].append(passing_dict[field][i])
+            return new_passing
+
+        ball = (-1, -1, [])  # center, angle, line
+
+        if len(passing["angles"]) > 0:
+            center_pos = []
+            for j, cand in enumerate(passing["centers"]):
+                center_pos.append(passing["centers"][j][0]/w)
+            if len(center_pos) > 0:
+                center_pos = np.array(center_pos)
+                center_scores = 1 / np.abs(center_pos - 0.5)
+                closest_center = np.argmax(center_scores)
+                if np.max(center_scores) >= 5:
+                    print("setting ball to closest center (score > 5)")
+                    ball = (closest_center, passing["angles"][closest_center], passing["lines"][closest_center])
+                    prev_centered = True
+                else:
+                    print("no ball found in center of frame")
+                    #prev_centered = False
+
+            if ball[0] == -1 and prev_ball[0] != -1:  # if no ball in center, but we have a previous ball
+                # find closest to previous ball center, similar slope
+                dist_to_prev = [np.linalg.norm(np.array([0.5*(cand[0][0] + cand[1][0]), 0.5*(cand[0][1] + cand[1][1])]) - center_point) for cand in passing["lines"]]
+                min_dist = np.argmin(dist_to_prev)
+                #if np.abs(passing["angles"][min_dist] - prev_ball[1]) < np.pi/2:
+                #    print("setting ball to closest to prev ball with slope within pi/2")
+                #    ball = (min_dist, passing["angles"][min_dist], passing["lines"][min_dist])
+                ball = (min_dist, passing["angles"][min_dist], passing["lines"][min_dist])
+        else:
+            print("nothing left, moving on")
 
         masked_grays.append(contour_edge_frame)
 
-        prev_lines = pass_box_lines
+        prev_lines = passing["lines"]
 
-        cv2.drawContours(frames[i], boxes_filt["pass"], -1, (0,255,0), 2)
+        cv2.drawContours(frames[i], passing["boxes"], -1, (0,255,0), 2)
         cv2.drawContours(frames[i], boxes_filt["fail"], -1, (150,150,255), 1)
+        if ball[0] != -1:
+            cv2.drawContours(frames[i], [passing["boxes"][ball[0]]], -1, (0,255,255), 3)
+        
+        prev_ball = (ball[0], ball[1], ball[2])
 
     output_video(frames, "_erodeDilateRects", isColor=True)
     output_video(masked_grays, "_maskedGray", isColor=False)
