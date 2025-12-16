@@ -163,6 +163,40 @@ def identify_ball2(video_path, min_area=50):
     last_valid_air_speed = None
     SHOT_POWER_FRAMES = 3
 
+    # ***BOUNCE DETECTION SECTION***
+    bounce_frames = []
+    bounce_centers = []
+
+    BOUNCE_VY_DOWN_MIN = 0.0
+    BOUNCE_VY_UP_MIN = 2.0
+    BOUNCE_COOLDOWN = 10
+    last_bounce_frame = -10
+
+    def is_over_table_xy(x, y):
+        return (TABLE_X_MIN_FRAC * w <= float(x) <= TABLE_X_MAX_FRAC * w) and (TABLE_Y_MIN <= float(y) <= TABLE_Y_MAX)
+
+    def detect_bounce(prev_v, cur_v, cur_center, frame_idx, allow_when_search=True):
+        nonlocal last_bounce_frame
+        if prev_v is None or cur_v is None or cur_center is None:
+            return False
+        if (frame_idx - last_bounce_frame) < BOUNCE_COOLDOWN:
+            return False
+
+        pvx, pvy = float(prev_v[0]), float(prev_v[1])
+        cvx, cvy = float(cur_v[0]), float(cur_v[1])
+
+        # must flip vertical direction: down -> up
+        if not (pvy > BOUNCE_VY_DOWN_MIN and cvy < -BOUNCE_VY_UP_MIN):
+            return False
+
+        # keep it table-ish (reduces paddle/player false positives)
+        cx, cy = float(cur_center[0]), float(cur_center[1])
+        if not is_over_table_xy(cx, cy):
+            return False
+
+        last_bounce_frame = frame_idx
+        return True
+
 
     for i, contours in enumerate(contours_by_frame):
         prev_search_mode = search_mode
@@ -181,6 +215,9 @@ def identify_ball2(video_path, min_area=50):
         # ***PREDICTION CENTER COMPUTATION SECTION***
         prev_ball_center = None
         pred_center = None
+        bounce_vel = None
+        bounce_dt = None
+
         if prev_ball[0] != -1:
             prev_ball_center = np.array(
                 [
@@ -537,10 +574,12 @@ def identify_ball2(video_path, min_area=50):
             last_valid_air_speed = None
 
 
+        vel_for_print = bounce_vel if bounce_vel is not None else last_any_vel
         print(
             f"[frame {i:03d}] server_side={server_side} locked={server_locked} prelock={prelock_mode} "
-            f"state={ball_state} dir={ball_dir_str}, vel={prev_ball_vel}"
+            f"state={ball_state} dir={ball_dir_str}, vel={vel_for_print}"
         )
+
 
         # ***HUD / LOGGING SECTION***
         if ball[0] != -1:
@@ -685,16 +724,49 @@ def identify_ball2(video_path, min_area=50):
                 ok_d = (d_pred_any <= TRUST_UPDATE_D_PRED)
 
             if ok_y and ok_d:
+                prev_any_center = last_any_center
+                prev_any_vel = last_any_vel
+                prev_any_frame = last_any_frame
+
                 if last_any_center is not None and last_any_frame is not None:
                     dt_any = max(1, i - last_any_frame)
                     last_any_vel = (cur_center_any - last_any_center) / float(dt_any)
+                    bounce_dt = dt_any
                 else:
                     last_any_vel = 0.8 * last_any_vel
+                    bounce_dt = None
 
                 last_any_center = cur_center_any
                 last_any_frame = i
 
+                # SINGLE source of truth for bounce velocity:
+                bounce_vel = last_any_vel
 
+                # bounce detection uses EXACTLY this velocity
+                if prev_any_vel is not None and bounce_vel is not None:
+                    if detect_bounce(prev_any_vel, bounce_vel, cur_center_any, i):
+                        bounce_frames.append(i)
+                        bounce_centers.append((float(cur_center_any[0]), float(cur_center_any[1])))
+                        print(
+                            f"[frame {i:03d}] BOUNCE detected at ({cur_center_any[0]:.1f},{cur_center_any[1]:.1f}) "
+                            f"vy: {float(prev_any_vel[1]):.1f} -> {float(bounce_vel[1]):.1f}"
+                        )
+
+
+        # draw bounce markers (if any)
+        if len(bounce_frames) > 0 and bounce_frames[-1] == i:
+            bx, by = bounce_centers[-1]
+            cv2.circle(frames[i], (int(bx), int(by)), 10, (255, 255, 0), 3)
+            cv2.putText(
+                frames[i],
+                "BOUNCE",
+                (int(bx) + 12, int(by) - 12),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (255, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
 
         # ***PREV BALL UPDATE SECTION***
         prev_center_for_vel = prev_ball_center
@@ -794,7 +866,7 @@ def identify_ball2(video_path, min_area=50):
 
         masked_grays.append(contour_edge_frame)
 
-    output_video(frames, "_erodeDilateRects", isColor=True)
+    output_video(frames, "_analyzed", isColor=True)
     # output_video(masked_grays, "_maskedGray", isColor=False)
 
 
