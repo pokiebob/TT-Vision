@@ -41,14 +41,17 @@ def identify_players(contours, video_path,
         cx = x + 0.5 * bw
         cy = y + 0.5 * bh
         area = float(cv2.contourArea(c))
-        return (cx, cy, area, x, y, bw, bh)
+        x_left = x
+        x_right = x + bw
+        return (cx, cy, area, x, y, bw, bh, x_left, x_right)
+
 
     feats = [feat(c) for c in contours]
 
     feats = [f for f in feats if f[2] >= min_area and (y_min <= f[1] <= y_max)]
 
-    left = [f for f in feats if f[0] <= x_left_max]
-    right = [f for f in feats if f[0] >= x_right_min]
+    left  = [f for f in feats if f[7] <= x_left_max]
+    right = [f for f in feats if f[8] >= x_right_min]
 
     def grow_cluster(side_feats):
         if not side_feats:
@@ -73,7 +76,7 @@ def identify_players(contours, video_path,
 
             size_factor = 1.0 / np.sqrt(max(1.0, float(len(selected))))
             gate = BASE_LINK * (0.85 ** pass_idx) * (0.9 + 0.6 * size_factor)
-            gate = max(0.09 * w, gate)  # don't go below a small floor
+            gate = max(0.09 * w, gate)
 
             new_sel = []
             still_rem = []

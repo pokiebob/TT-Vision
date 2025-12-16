@@ -52,7 +52,6 @@ def identify_ball2(video_path, min_area=50):
     TABLE_X_MAX_FRAC = 0.68
 
 
-    BASE_SEARCH_GATE = FAR_JUMP_THRESH
     SEARCH_VEL_GAIN = 1.8
     MAX_SEARCH_GATE = int(0.45 * max(w, h))
 
@@ -157,6 +156,12 @@ def identify_ball2(video_path, min_area=50):
             int(min(w - 1, x2 + pad)),
             int(min(h - 1, y2 + pad)),
         )
+
+    # ***SHOT POWER SECTION***
+    last_shot_power = None
+    shot_air_streak = 0
+    last_valid_air_speed = None
+    SHOT_POWER_FRAMES = 3
 
 
     for i, contours in enumerate(contours_by_frame):
@@ -292,6 +297,11 @@ def identify_ball2(video_path, min_area=50):
 
                 ball_dir_str = "->" if server_side == "LEFT" else "<-"
                 ball_state = "air"
+
+                last_shot_power = None
+                shot_air_streak = 0
+                last_valid_air_speed = None
+
 
         # ***NORMAL SEARCH/TRACK SECTION (ONLY AFTER PRELOCK)***
         if not prelock_mode:
@@ -521,16 +531,16 @@ def identify_ball2(video_path, min_area=50):
             else:
                 ball_state = "air"
 
+        if ball_state == "hit":
+            last_shot_power = None
+            shot_air_streak = 0
+            last_valid_air_speed = None
+
+
         print(
             f"[frame {i:03d}] server_side={server_side} locked={server_locked} prelock={prelock_mode} "
-            f"state={ball_state} dir={ball_dir_str}"
+            f"state={ball_state} dir={ball_dir_str}, vel={prev_ball_vel}"
         )
-
-        xL = int(TABLE_X_MIN_FRAC * w)
-        xR = int(TABLE_X_MAX_FRAC * w)
-        cv2.line(frames[i], (xL, 0), (xL, h - 1), (255, 0, 0), 3)
-        cv2.line(frames[i], (xR, 0), (xR, h - 1), (255, 0, 0), 3)
-
 
         # ***HUD / LOGGING SECTION***
         if ball[0] != -1:
@@ -586,6 +596,18 @@ def identify_ball2(video_path, min_area=50):
             frames[i],
             f"Ball state: {ball_state}   dir: {ball_dir_str}",
             (20, 140),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.85,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        power_text = "Shot power: None" if last_shot_power is None else f"Shot power: {last_shot_power:.1f} px/f"
+        cv2.putText(
+            frames[i],
+            power_text,
+            (20, 180),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.85,
             (255, 255, 255),
@@ -715,11 +737,60 @@ def identify_ball2(video_path, min_area=50):
                     track_acc_hist = track_acc_hist[-VEL_HIST_N:]
 
                 last_track_vel = v_cur
+
+                if last_shot_power is None:
+                    if ball_state == "air":
+                        shot_air_streak += 1
+                        if float(speed_cur) > 0.0:
+                            last_valid_air_speed = float(speed_cur)
+                        if shot_air_streak >= SHOT_POWER_FRAMES and (last_valid_air_speed is not None) and (last_valid_air_speed > 0.0):
+                            last_shot_power = float(last_valid_air_speed)
+
+                    else:
+                        shot_air_streak = 0
+                        last_valid_air_speed = None
+
             else:
                 last_track_vel = np.array([0.0, 0.0], dtype=np.float32)
+                if last_shot_power is None:
+                    shot_air_streak = 0
+                    last_valid_air_speed = None
+
 
             last_track_center = sel_center
             last_track_frame = i
+        else:
+            if (last_shot_power is None) and (ball_state != "hit"):
+                pass
+            else:
+                if last_shot_power is None:
+                    shot_air_streak = 0
+                    last_valid_air_speed = None
+
+        # ***SHOT POWER (SEARCH MODE) SECTION***
+        if (
+            (last_shot_power is None)
+            and (not prelock_mode)
+            and (ball_state == "air")
+            and (ball[0] != -1)
+            and (last_track_center is not None)
+            and (last_track_frame is not None)
+            and (last_track_frame < i)
+        ):
+            bx, by = passing["centers"][ball[0]]
+            sel_center = np.array([bx, by], dtype=np.float32)
+            dt = max(1, i - last_track_frame)
+            v_est = (sel_center - last_track_center) / float(dt)
+            speed_est = float(np.linalg.norm(v_est))
+            shot_air_streak += 1
+            if float(speed_est) > 0.0:
+                last_valid_air_speed = float(speed_est)
+            if shot_air_streak >= SHOT_POWER_FRAMES and (last_valid_air_speed is not None) and (last_valid_air_speed > 0.0):
+                last_shot_power = float(last_valid_air_speed)
+
+
+
+        print(f"[frame {i:03d}] shot_power={last_shot_power}")
 
         masked_grays.append(contour_edge_frame)
 
