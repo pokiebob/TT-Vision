@@ -2,7 +2,8 @@ import cv2
 import numpy as np
 import math
 from thresholding import erode_dilate, output_video
-from tqdm import tqdm
+# from tqdm import tqdm
+from identifyPlayers import identify_players
 
 
 # ***BALL IDENTIFICATION MAIN FUNCTION SECTION***
@@ -61,7 +62,6 @@ def identify_ball2(video_path, min_area=50):
     server_side = "?"
     server_locked = False
 
-    # IMPORTANT: require "stable track over table" before server lock can happen
     STABLE_TRACK_FRAMES = 10
     stable_track_count = 0
 
@@ -76,9 +76,6 @@ def identify_ball2(video_path, min_area=50):
     track_acc_hist = []
 
     # ***PRE-LOCK INITIAL SEARCH SECTION***
-    # Before we have a stable track over the table (and thus before server is known),
-    # we should NOT use the tight track/search gating logic. We just want to find the ball
-    # over the table consistently for STABLE_TRACK_FRAMES frames.
     prelock_mode = True
 
     # ***HIT-AWARE REACQUIRE SECTION***
@@ -91,6 +88,51 @@ def identify_ball2(video_path, min_area=50):
         if na < 1e-6 or nb < 1e-6:
             return 1.0
         return float(np.dot(a, b) / (na * nb))
+    
+    # ***BALL STATE SECTION***
+    ball_state = "air"
+    ball_dir_str = "->"
+
+    HIT_BOX_PAD = 18
+
+    def point_in_box(p, box):
+        if box is None:
+            return False
+        x, y = float(p[0]), float(p[1])
+        x1, y1, x2, y2 = box
+        return (x1 <= x <= x2) and (y1 <= y <= y2)
+
+    def pad_box(box, pad, w, h):
+        if box is None:
+            return None
+        x1, y1, x2, y2 = box
+        return (
+            int(max(0, x1 - pad)),
+            int(max(0, y1 - pad)),
+            int(min(w - 1, x2 + pad)),
+            int(min(h - 1, y2 + pad)),
+        )
+
+    def vel_dir_horiz(v):
+        vx = float(v[0])
+        if abs(vx) < 1e-6:
+            return None
+        return "->" if vx > 0 else "<-"
+
+    def dir_from_side(side, server_side):
+        if side == "LEFT":
+            return "->"
+        if side == "RIGHT":
+            return "<-"
+        if server_side == "LEFT":
+            return "->"
+        if server_side == "RIGHT":
+            return "<-"
+        return "->"
+
+
+
+
 
     # ***FRAME LOOP SECTION***
     for i, contours in enumerate(contours_by_frame):
@@ -159,7 +201,6 @@ def identify_ball2(video_path, min_area=50):
             cv2.drawContours(mask, [box], -1, 255, cv2.FILLED)
             meanS = cv2.mean(hsv[..., 1], mask=mask)[0]
 
-            # filters
             if not (20 < cv2.contourArea(box) < 2000):
                 boxes_filt["fail"].append(box)
             elif boxW > 20 and boxH > 20:
@@ -193,12 +234,8 @@ def identify_ball2(video_path, min_area=50):
         ball = (-1, -1, [])  # (idx, angle, line)
 
         # ***PRELOCK MODE (NO TRACK/SEARCH GATING) SECTION***
-        # While prelock_mode is True, we:
-        #   - select "best-looking" candidate without any gating box
-        #   - but ONLY count frames towards server lock when detection is over-table
         if prelock_mode:
             if len(passing["centers"]) > 0:
-                # simple center preference until we get stable track; avoids early gating failures
                 scores = []
                 for (cx, cy) in passing["centers"]:
                     center_score = 1.0 / (abs((cx / w) - 0.5) + 1e-6)
@@ -208,41 +245,38 @@ def identify_ball2(video_path, min_area=50):
             else:
                 ball = (-1, -1, [])
 
-            # determine over-table using selected center (NOT pred_center)
             sel_over_table = False
             if ball[0] != -1:
                 bx, by = passing["centers"][ball[0]]
                 sel_over_table = (0.3 * w <= float(bx) <= 0.7 * w)
 
-            # update stable count only when we have an over-table detection
             if ball[0] != -1 and sel_over_table:
                 stable_track_count += 1
             else:
                 stable_track_count = 0
 
-            # once we have stable over-table detections, lock server side and enable normal gating
             if stable_track_count >= STABLE_TRACK_FRAMES and ball[0] != -1:
                 bx, by = passing["centers"][ball[0]]
                 server_side = "LEFT" if bx < (w / 2.0) else "RIGHT"
                 server_locked = True
                 prelock_mode = False
 
-                # initialize track state so gating starts smoothly
                 last_track_center = np.array([bx, by], dtype=np.float32)
                 last_track_frame = i
                 last_track_vel = np.array([0.0, 0.0], dtype=np.float32)
                 prev_ball_vel = np.array([0.0, 0.0], dtype=np.float32)
 
+                ball_dir_str = "->" if server_side == "LEFT" else "<-"
+                ball_state = "air"
+
         # ***NORMAL SEARCH/TRACK SECTION (ONLY AFTER PRELOCK)***
         if not prelock_mode:
-            # ***SEARCH ANCHOR SECTION***
             search_anchor = None
             if pred_center is not None:
                 search_anchor = pred_center
             elif last_track_center is not None:
                 search_anchor = last_track_center
 
-            # ***SEARCH MODE HARD GATE SECTION***
             if (
                 search_mode > 0
                 and search_anchor is not None
@@ -264,8 +298,6 @@ def identify_ball2(video_path, min_area=50):
                         boxes_filt["fail"].append(passing["boxes"][j])
                 passing = filter_passing(passing, keep)
 
-
-            # ***CANDIDATE SCORING + SELECTION SECTION***
             ball = (-1, -1, [])
             if len(passing["angles"]) > 0:
                 if search_mode > 0:
@@ -340,7 +372,6 @@ def identify_ball2(video_path, min_area=50):
             else:
                 search_mode = SEARCH_FRAMES
 
-            # ***MOTION-BASED REJECTION SECTION***
             if (
                 (ball[0] != -1)
                 and (search_mode == 0)
@@ -400,8 +431,6 @@ def identify_ball2(video_path, min_area=50):
                     search_mode = SEARCH_FRAMES
                     ball = (-1, -1, [])
 
-
-            # ***MODE STRING + SEARCH VISUALS (BLUE BOX) SECTION***
             mode_str = "SEARCH" if search_mode > 0 else "TRACK"
             if search_mode > 0 and search_anchor is not None:
                 v_ref = prev_ball_vel
@@ -427,6 +456,40 @@ def identify_ball2(video_path, min_area=50):
             cv2.drawContours(
                 frames[i], [passing["boxes"][ball[0]]], -1, (0, 255, 255), 3
             )
+        left_box, right_box = identify_players(contours, video_path)
+
+        purple = (255, 0, 255)
+        if left_box is not None:
+            x1, y1, x2, y2 = left_box
+            cv2.rectangle(frames[i], (x1, y1), (x2, y2), purple, 4)
+
+        if right_box is not None:
+            x1, y1, x2, y2 = right_box
+            cv2.rectangle(frames[i], (x1, y1), (x2, y2), purple, 4)
+
+        if (ball[0] != -1) and (not prelock_mode) and server_locked:
+            bx, by = passing["centers"][ball[0]]
+            ball_center = np.array([bx, by], dtype=np.float32)
+
+            left_box_p = pad_box(left_box, HIT_BOX_PAD, w, h)
+            right_box_p = pad_box(right_box, HIT_BOX_PAD, w, h)
+
+            in_left = point_in_box(ball_center, left_box_p)
+            in_right = point_in_box(ball_center, right_box_p)
+
+            if in_left:
+                ball_state = "hit"
+                ball_dir_str = "->"
+            elif in_right:
+                ball_state = "hit"
+                ball_dir_str = "<-"
+            else:
+                ball_state = "air"
+
+        print(
+            f"[frame {i:03d}] server_side={server_side} locked={server_locked} prelock={prelock_mode} "
+            f"state={ball_state} dir={ball_dir_str}"
+        )
 
         # ***HUD / LOGGING SECTION***
         if ball[0] != -1:
@@ -478,6 +541,18 @@ def identify_ball2(video_path, min_area=50):
             int(2),
             cv2.LINE_AA,
         )
+        cv2.putText(
+            frames[i],
+            f"Ball state: {ball_state}   dir: {ball_dir_str}",
+            (20, 140),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.85,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        
 
         dbg_lines = []
         dbg_lines.append(f"passing: {len(passing['centers'])}")
@@ -559,6 +634,7 @@ def identify_ball2(video_path, min_area=50):
 
 
         # ***PREV BALL UPDATE SECTION***
+        prev_center_for_vel = prev_ball_center
         prev_ball = (ball[0], ball[1], ball[2])
 
         # ***VELOCITY UPDATE FOR PREDICTION SECTION***
@@ -570,8 +646,8 @@ def identify_ball2(video_path, min_area=50):
                 ],
                 dtype=np.float32,
             )
-            if prev_ball_center is not None:
-                prev_ball_vel = new_center - prev_ball_center
+            if prev_center_for_vel is not None:
+                prev_ball_vel = new_center - prev_center_for_vel
             else:
                 prev_ball_vel = 0.8 * prev_ball_vel
         else:
@@ -608,7 +684,7 @@ def identify_ball2(video_path, min_area=50):
 
     # ***OUTPUT VIDEOS SECTION***
     output_video(frames, "_erodeDilateRects", isColor=True)
-    output_video(masked_grays, "_maskedGray", isColor=False)
+    # output_video(masked_grays, "_maskedGray", isColor=False)
 
 
 if __name__ == "__main__":
