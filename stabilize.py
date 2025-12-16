@@ -206,7 +206,7 @@ def stabilize(imageNames):
 
 #calculate_flow([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
 
-stabilize([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(333)])
+stabilize([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
 
 #calc_sparse_flow([f"TH_WCQ_point0.mp4-{i:04d}.png" for i in range(373)])
 
