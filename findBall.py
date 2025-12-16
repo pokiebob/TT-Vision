@@ -6,7 +6,7 @@ from thresholding import erode_dilate, output_video
 from identifyPlayers import identify_players
 
 
-# ***BALL IDENTIFICATION MAIN FUNCTION SECTION***
+
 def identify_ball2(video_path, min_area=50):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -23,7 +23,9 @@ def identify_ball2(video_path, min_area=50):
         frames.append(frame)
 
     masked_grays = []
+
     contours_by_frame = erode_dilate("./footage/_thresholded.avi", min_area=min_area)
+
 
     prev_ball = (-1, -1, [])  # (idx, angle, line)
 
@@ -45,6 +47,11 @@ def identify_ball2(video_path, min_area=50):
     last_any_vel = np.array([0.0, 0.0], dtype=np.float32)
     last_any_frame = None
 
+    # ***TABLE ROI PARAMS SECTION***
+    TABLE_X_MIN_FRAC = 0.32
+    TABLE_X_MAX_FRAC = 0.68
+
+
     BASE_SEARCH_GATE = FAR_JUMP_THRESH
     SEARCH_VEL_GAIN = 1.8
     MAX_SEARCH_GATE = int(0.45 * max(w, h))
@@ -54,6 +61,44 @@ def identify_ball2(video_path, min_area=50):
     TABLE_Y_MAX = 0.75 * h
 
     TRUST_UPDATE_D_PRED = 220.0
+
+    # ***DIRECTIONAL SEARCH GATING SECTION***
+    BASE_GATE_X = FAR_JUMP_THRESH
+    BASE_GATE_Y = int(0.22 * h)
+    MAX_GATE_X = MAX_SEARCH_GATE
+    MAX_GATE_Y = int(0.55 * h)
+
+    AIR_BACK_FRAC = 0.35
+    HIT_BACK_FRAC = 0.18
+    AIR_FWD_MULT = 1.35
+    HIT_FWD_MULT = 1.85
+    Y_MULT_AIR = 1.00
+    Y_MULT_HIT = 1.25
+
+    def compute_gate_xy(speed_ref, state, dir_str):
+        gx = int(min(BASE_GATE_X + SEARCH_VEL_GAIN * speed_ref, MAX_GATE_X))
+
+        if state == "hit":
+            gy = int(min(BASE_GATE_Y * Y_MULT_HIT + 0.6 * SEARCH_VEL_GAIN * speed_ref, MAX_GATE_Y))
+        else:
+            gy = int(min(BASE_GATE_Y * Y_MULT_AIR + 0.5 * SEARCH_VEL_GAIN * speed_ref, MAX_GATE_Y))
+
+        if state == "hit":
+            back_frac = HIT_BACK_FRAC
+            fwd_mult = HIT_FWD_MULT
+        else:
+            back_frac = AIR_BACK_FRAC
+            fwd_mult = AIR_FWD_MULT
+
+        back = int(max(12, back_frac * gx))
+        fwd = int(max(24, fwd_mult * gx))
+
+        if dir_str == "->":
+            left_w, right_w = back, fwd
+        else:
+            left_w, right_w = fwd, back
+
+        return left_w, right_w, gy
 
 
 
@@ -69,7 +114,7 @@ def identify_ball2(video_path, min_area=50):
     VEL_HIST_N = 12
     MAX_SPEED_ABS = 100.0
     SPEED_MED_MULT = 3.5
-    ACC_ABS_THRESH = 25.0
+    ACC_ABS_THRESH = 30.0
     ACC_MED_MULT = 4.0
 
     track_speed_hist = []
@@ -113,28 +158,7 @@ def identify_ball2(video_path, min_area=50):
             int(min(h - 1, y2 + pad)),
         )
 
-    def vel_dir_horiz(v):
-        vx = float(v[0])
-        if abs(vx) < 1e-6:
-            return None
-        return "->" if vx > 0 else "<-"
 
-    def dir_from_side(side, server_side):
-        if side == "LEFT":
-            return "->"
-        if side == "RIGHT":
-            return "<-"
-        if server_side == "LEFT":
-            return "->"
-        if server_side == "RIGHT":
-            return "<-"
-        return "->"
-
-
-
-
-
-    # ***FRAME LOOP SECTION***
     for i, contours in enumerate(contours_by_frame):
         prev_search_mode = search_mode
 
@@ -170,7 +194,7 @@ def identify_ball2(video_path, min_area=50):
         elif prev_ball_center is not None:
             x_ref = float(prev_ball_center[0])
         if x_ref is not None:
-            over_table = (0.3 * w <= x_ref <= 0.7 * w)
+            over_table = (TABLE_X_MIN_FRAC * w <= x_ref <= TABLE_X_MAX_FRAC * w)
 
         hsv = cv2.cvtColor(frames[i], cv2.COLOR_BGR2HSV)
 
@@ -248,7 +272,7 @@ def identify_ball2(video_path, min_area=50):
             sel_over_table = False
             if ball[0] != -1:
                 bx, by = passing["centers"][ball[0]]
-                sel_over_table = (0.3 * w <= float(bx) <= 0.7 * w)
+                sel_over_table = (TABLE_X_MIN_FRAC * w <= float(bx) <= TABLE_X_MAX_FRAC * w)
 
             if ball[0] != -1 and sel_over_table:
                 stable_track_count += 1
@@ -287,12 +311,20 @@ def identify_ball2(video_path, min_area=50):
                     v_ref = last_any_vel
 
                 speed_ref = float(np.linalg.norm(v_ref))
-                gate = int(min(BASE_SEARCH_GATE + SEARCH_VEL_GAIN * speed_ref, MAX_SEARCH_GATE))
+                dir_str = ball_dir_str
+
+                left_w, right_w, gate_y = compute_gate_xy(speed_ref, ball_state, dir_str)
+
+                ax, ay = float(search_anchor[0]), float(search_anchor[1])
+                x1 = ax - float(left_w)
+                x2 = ax + float(right_w)
+                y1 = ay - float(gate_y)
+                y2 = ay + float(gate_y)
 
                 keep = []
                 for j, c in enumerate(passing["centers"]):
-                    d = float(np.linalg.norm(np.array(c, dtype=np.float32) - search_anchor))
-                    if d <= gate:
+                    cx, cy = float(c[0]), float(c[1])
+                    if (x1 <= cx <= x2) and (y1 <= cy <= y2):
                         keep.append(j)
                     else:
                         boxes_filt["fail"].append(passing["boxes"][j])
@@ -436,14 +468,17 @@ def identify_ball2(video_path, min_area=50):
                 v_ref = prev_ball_vel
                 if last_any_vel is not None and last_any_frame is not None and last_any_frame < i:
                     v_ref = last_any_vel
+
                 speed_ref = float(np.linalg.norm(v_ref))
-                gate = int(min(BASE_SEARCH_GATE + SEARCH_VEL_GAIN * speed_ref, MAX_SEARCH_GATE))
+                dir_str = ball_dir_str
+
+                left_w, right_w, gate_y = compute_gate_xy(speed_ref, ball_state, dir_str)
 
                 cx, cy = int(search_anchor[0]), int(search_anchor[1])
-                x1 = int(max(0, cx - gate))
-                y1 = int(max(0, cy - gate))
-                x2 = int(min(w - 1, cx + gate))
-                y2 = int(min(h - 1, cy + gate))
+                x1 = int(max(0, cx - left_w))
+                y1 = int(max(0, cy - gate_y))
+                x2 = int(min(w - 1, cx + right_w))
+                y2 = int(min(h - 1, cy + gate_y))
                 cv2.rectangle(frames[i], (x1, y1), (x2, y2), (255, 200, 100), 2)
                 cv2.circle(frames[i], (cx, cy), 6, (203, 192, 255), -1)
         else:
@@ -490,6 +525,12 @@ def identify_ball2(video_path, min_area=50):
             f"[frame {i:03d}] server_side={server_side} locked={server_locked} prelock={prelock_mode} "
             f"state={ball_state} dir={ball_dir_str}"
         )
+
+        xL = int(TABLE_X_MIN_FRAC * w)
+        xR = int(TABLE_X_MAX_FRAC * w)
+        cv2.line(frames[i], (xL, 0), (xL, h - 1), (255, 0, 0), 3)
+        cv2.line(frames[i], (xR, 0), (xR, h - 1), (255, 0, 0), 3)
+
 
         # ***HUD / LOGGING SECTION***
         if ball[0] != -1:
@@ -682,7 +723,6 @@ def identify_ball2(video_path, min_area=50):
 
         masked_grays.append(contour_edge_frame)
 
-    # ***OUTPUT VIDEOS SECTION***
     output_video(frames, "_erodeDilateRects", isColor=True)
     # output_video(masked_grays, "_maskedGray", isColor=False)
 

@@ -151,4 +151,4 @@ def erode_dilate(vid, min_area=50):
 
 # erode_dilate("./footage/_thresholded.avi")
 
-# threshold_imgs([], images=crop_video("./footage/_imgStabLK.avi", 0.25, 0.85, 0.3, 0.7))
+threshold_imgs([], images=crop_video("./footage/_imgStabLK.avi", 0.2, 0.9, 0.3, 0.7))
